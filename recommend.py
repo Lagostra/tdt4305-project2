@@ -15,7 +15,26 @@ parser.add_argument('-output', type=str, help='Path to the output file where the
 args = parser.parse_args(sys.argv[1:])
 
 
-tweets = sc.textFile(args.file).map(lambda x: x.split('\t')).map(lambda x: (x[0], x[1].split(' ')))
-print(tweets.first())
+# Collect all tweets
+tweets = sc.textFile(args.file).map(lambda x: x.split('\t')) 
 
+# Map to key-value pairs with (user, word) as key and frequency as value
+word_counts = tweets.flatMapValues(lambda x: x.split()) \
+				.map(lambda x: ((x[0], x[1]), 1)) \
+				.reduceByKey(lambda x, y: x + y)
 
+# Get word-frequency pairs of the query user
+query_counts = word_counts.filter(lambda x: x[0][0] == args.user).map(lambda x: (x[0][1], x[1]))
+
+# Remove query user, and map to word as key
+word_counts = word_counts.filter(lambda x: x[0][0] != args.user).map(lambda x: (x[0][1], (x[0][0], x[1])))
+
+# Join query and haystack, and take minimum of all frequencies + make user key
+frequency_scores = word_counts.join(query_counts).map(lambda x: (x[1][0][0], min(x[1][0][1], x[1][1])))
+
+# Sum all frequency scores to get the similarity, and order by similarity (and username)
+similarities = frequency_scores.reduceByKey(lambda x, y: x + y).sortBy(lambda x: (-x[1], x[0]))
+
+top_k = similarities.zipWithIndex().filter(lambda x: x[1] < (args.k)).map(lambda x: x[0])
+
+top_k.map(lambda x: x[0] + '\t' + str(x[1])).coalesce(1).saveAsTextFile(args.output)
